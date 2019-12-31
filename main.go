@@ -21,8 +21,7 @@ import (
 	"unicode"
 )
 
-const p = 75
-const d = 10000000000
+const d = 1000000000
 
 var bot *tgbotapi.BotAPI
 var parser *gofeed.Parser
@@ -46,7 +45,7 @@ func lookup(envName string) string {
 	return res
 }
 
-func replacement(r rune) *string {
+func replacement(r rune) string {
 	var res string
 	if (8210 <= int(r) && int(r) < 8214) || int(r) == 11834 || int(r) == 11835 || int(r) == 45 || int(r) == 32 {
 		res = "_"
@@ -61,59 +60,44 @@ func replacement(r rune) *string {
 	} else {
 		res = string(unicode.ToLower(r))
 	}
-	return &res
+	return res
 }
 
-func toHashTag(category *string) *string{
+func toHashTag(category string) string{
 	res := "#"
-	*category = strings.ReplaceAll(*category, "*nix", "unix")
-	*category = strings.ReplaceAll(*category, "c++", "cpp")
-	for _, r := range *category {
-		res += *replacement(r)
-	}
-	return &res
-}
-
-
-func getHash(str *string) uint64 {
-	var res uint64
-	res = 1
-	for _, r := range *str {
-		res = p * res + uint64(r)
+	category = strings.ReplaceAll(category, "*nix", "unix")
+	category = strings.ReplaceAll(category, "c++", "cpp")
+	for _, r := range category {
+		res += replacement(r)
 	}
 	return res
 }
 
-func formatCategories(item *gofeed.Item) *string {
+func formatCategories(item *gofeed.Item) string {
 	n := len(item.Categories)
-	categories := make([]*string, n)
-	hashes := make([]uint64, n)
-	comp := func(a, b interface{}) int {
-		return strings.Compare(*categories[a.(int)], *categories[b.(int)])
+	categories := make([]string, n)
+	s := treeset.NewWithStringComparator()
+	for i := 0; i < n; i += 1{
+		categories[i] = toHashTag(item.Categories[i])
 	}
-	s := treeset.NewWith(comp)
-	for i := 0; i < len(item.Categories); i += 1 {
-		categories[i] = toHashTag(&item.Categories[i])
-		hashes[i] = getHash(categories[i])
-	}
-	for i := 0; i < len(item.Categories); i += 1 {
-		if res, _ := s.Find(func(index int, value interface{}) bool { return hashes[value.(int)] == hashes[i] }); res == -1 {
-			s.Add(i)
+	for i := 0; i < n; i += 1 {
+		if !s.Contains(categories[i]) {
+			s.Add(categories[i])
 		}
 	}
 	values := s.Values()
 	res := ""
-	for value := 0; value < len(values); value += 1 {
-		res += *categories[values[value].(int)] + " "
+	for index := 0; index < len(values); index += 1 {
+		res += values[index].(string) + " "
 	}
-	return &res
+	return res
 }
 
 func formatItem(feed *gofeed.Feed, itemNumber int) *string {
 	item := feed.Items[itemNumber]
 	res := "[" + html.EscapeString(feed.Title) + "]\n<b>" +
 		html.EscapeString(item.Title) + "</b>\n" +
-		html.EscapeString(*formatCategories(item)) + "\n\n" +
+		html.EscapeString(formatCategories(item)) + "\n\n" +
 		"<a href=\"" + html.EscapeString(item.Link) + "\">Читать</a>"
 	return &res
 }
@@ -158,13 +142,18 @@ func filter(item *gofeed.Item) bool {
 
 func update() {
 	for i := 0; i < len(database.Urls); i += 1 {
-		feeds[i], _ = parser.ParseURL(database.Urls[i])
-		for itemNumber := len(feeds[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
-			if filter(feeds[i].Items[itemNumber]) {
-				for idNumber := 0; idNumber < len(database.Ids); idNumber += 1 {
-					sendItem(database.Ids[idNumber], feeds[i], itemNumber)
+		var err error
+		feeds[i], err = parser.ParseURL(database.Urls[i])
+		if err == nil {
+			for itemNumber := len(feeds[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
+				if filter(feeds[i].Items[itemNumber]) {
+					for idNumber := 0; idNumber < len(database.Ids); idNumber += 1 {
+						sendItem(database.Ids[idNumber], feeds[i], itemNumber)
+					}
 				}
 			}
+		} else {
+			log.Panic(err)
 		}
 	}
 }
@@ -174,36 +163,34 @@ func evolve() {
 	if err == nil {
 		err = json.Unmarshal(data, &database)
 	}
-	file, err := os.Open("evolution.txt")
-	if err != nil {
-		log.Panic(err)
-	}
-	scanner := bufio.NewScanner(file)
 	n := len(database.Urls)
-	for scanner.Scan() {
-		splitted := strings.Split(scanner.Text(), " ")
-		if splitted[0] == "+" {
-			if splitted[1] == "h" {
-				res, _ := strconv.ParseUint(splitted[2], 10, 64)
-				database.Hashes = append(database.Hashes, res)
-			} else if splitted[1] == "u" {
-				database.Urls = append(database.Urls, splitted[2])
-				n += 1
-			} else if splitted[1] == "i" {
-				res, _ := strconv.ParseInt(splitted[2], 10, 64)
-				database.Ids = append(database.Ids, res)
+	file, err := os.Open("evolution.txt")
+	if err == nil {
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			splitted := strings.Split(scanner.Text(), " ")
+			if splitted[0] == "+" {
+				if splitted[1] == "h" {
+					res, _ := strconv.ParseUint(splitted[2], 10, 64)
+					database.Hashes = append(database.Hashes, res)
+				} else if splitted[1] == "u" {
+					database.Urls = append(database.Urls, splitted[2])
+					n += 1
+				} else if splitted[1] == "i" {
+					res, _ := strconv.ParseInt(splitted[2], 10, 64)
+					database.Ids = append(database.Ids, res)
+				}
 			}
 		}
 	}
 	feeds = make([]*gofeed.Feed, n)
-	d, err := json.Marshal(database)
-	f, err := os.Create("db.json")
+	data, err = json.Marshal(database)
+	file, err = os.Create("db.json")
 	if err != nil {
 		log.Panic(err)
 	}
-	_, _ = f.Write(d)
-	defer f.Close()
-	_ = f.Sync()
+	_, _ = file.Write(data)
+	_ = file.Sync()
 }
 
 func startPolling() {
@@ -280,13 +267,14 @@ func updateHandler() {
 func main() {
 	proxyURL, err := url.Parse(lookup("HTTP_PROXY"))
 	if err != nil {
-		log.Panic("Invalid HTTP proxy URL")
+		log.Fatal("Invalid HTTP proxy URL")
 	}
-	client := http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
-	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), &client)
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), client)
 	if err != nil {
 		log.Panic(err)
 	}
+	database = db{}
 	feeds = []*gofeed.Feed{}
 	parser = gofeed.NewParser()
 	bot.Debug = false
