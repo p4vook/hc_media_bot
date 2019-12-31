@@ -36,7 +36,6 @@ type db struct {
 
 var database db
 
-
 func lookup(envName string) string {
 	res, ok := os.LookupEnv(envName)
 	if !ok {
@@ -67,8 +66,11 @@ func toHashTag(category string) string{
 	res := "#"
 	category = strings.ReplaceAll(category, "*nix", "unix")
 	category = strings.ReplaceAll(category, "c++", "cpp")
-	for _, r := range category {
-		res += replacement(r)
+	for i, r := range category {
+        x := replacement(r)
+        if (x == "_" && res[-1] != "_") || x != "_" {
+            res += x
+        }
 	}
 	return res
 }
@@ -153,7 +155,7 @@ func update() {
 				}
 			}
 		} else {
-			log.Panic(err)
+			log.Println(database.Urls[i] + " пидарасы!")
 		}
 	}
 }
@@ -228,9 +230,11 @@ func updateHandler() {
 					}
 				}
 			case "start":
+                fmt.Println("Debug5.2")
 				msg := tgbotapi.NewMessage(chatId, "Hi!")
 				_, _ = bot.Send(msg)
 			case "get_ith":
+                fmt.Println("Debug5.3")
 				splitted := strings.Split(args, " ")
 				if len(splitted) > 1 {
 					res1, err1 := strconv.Atoi(splitted[0])
@@ -244,6 +248,7 @@ func updateHandler() {
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Not a number"))
 				}
 			case "add_feed":
+                fmt.Println("Debug5.4")
 				if _, err := url.Parse(args); err == nil {
 					feed, err := parser.ParseURL(args)
 					if err == nil {
