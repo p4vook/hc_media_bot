@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/emirpasic/gods/sets/treeset"
@@ -13,6 +14,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -290,13 +292,14 @@ func updateHandler() {
 }
 
 func main() {
-	dialer, err := proxy.SOCKS5("tcp", lookup("proxy_url"), proxy.Auth{lookup("PROXY_USERNAME"), lookup("PROXY_PASSWORD")}, proxy.Direct)
+	auth := proxy.Auth{User: lookup("PROXY_USERNAME"), Password: lookup("PROXY_PASSWORD")}
+	dialer, err := proxy.SOCKS5("tcp", lookup("PROXY_URL"), &auth, proxy.Direct)
 	if err != nil {
 		log.Fatal("Invalid SOCKS5 proxy URL")
 	}
-	transport := &http.Transport{}
+
+	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
 	client := &http.Client{Transport: transport}
-	transport.Dial = dialer.Dial
 	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), client)
 	if err != nil {
 		log.Panic(err)
