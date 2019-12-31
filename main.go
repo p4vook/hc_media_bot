@@ -21,19 +21,24 @@ import (
 	"unicode"
 )
 
-const d = 1000000000
+const d = 5 * 1000 * 1000 // sleep duration in nanoseconds
+
+type link struct {
+	Address string
+	Enabled bool
+}
+
+type db struct {
+	Hashes []uint64
+	Urls   []link
+	Ids    []int64
+}
 
 var bot *tgbotapi.BotAPI
 var parser *gofeed.Parser
 var feeds []*gofeed.Feed
 var w *os.File
-
-type db struct {
-	Hashes []uint64
-	Urls   []string
-	Ids    []int64
-}
-
+var hashes treeset.Set
 var database db
 
 func lookup(envName string) string {
@@ -42,6 +47,18 @@ func lookup(envName string) string {
 		log.Fatal("Please set the " + envName + " environmental variable.")
 	}
 	return res
+}
+
+func uint64Comp(a, b interface{}) int {
+	aUint := a.(uint64)
+	bUint := b.(uint64)
+	if aUint < bUint {
+		return -1
+	} else if aUint > bUint {
+		return 1
+	} else {
+		return 0
+	}
 }
 
 func replacement(r rune) string {
@@ -66,9 +83,9 @@ func toHashTag(category string) string{
 	res := "#"
 	category = strings.ReplaceAll(category, "*nix", "unix")
 	category = strings.ReplaceAll(category, "c++", "cpp")
-	for i, r := range category {
+	for _, r := range category {
         x := replacement(r)
-        if (x == "_" && res[-1] != "_") || x != "_" {
+        if (x == "_" && res[len(res) - 1] != '_') || x != "_" {
             res += x
         }
 	}
@@ -126,15 +143,9 @@ func filter(item *gofeed.Item) bool {
 	hasher := fnv.New64a()
 	_, _ = io.WriteString(hasher, removeGetArgs(item.Link))
 	hash := hasher.Sum64()
-	res := true
-	for i := len(database.Hashes) - 1; i >= 0; i -= 1 {
-		if database.Hashes[i] == hash {
-			res = false
-			break
-		}
-	}
-	if res {
-		database.Hashes = append(database.Hashes, hash)
+	res := hashes.Contains(hash)
+	if !res {
+		hashes.Add(hash)
 		_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
 		_ = w.Sync()
 		return true
@@ -144,18 +155,24 @@ func filter(item *gofeed.Item) bool {
 
 func update() {
 	for i := 0; i < len(database.Urls); i += 1 {
-		var err error
-		feeds[i], err = parser.ParseURL(database.Urls[i])
-		if err == nil {
-			for itemNumber := len(feeds[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
-				if filter(feeds[i].Items[itemNumber]) {
-					for idNumber := 0; idNumber < len(database.Ids); idNumber += 1 {
-						sendItem(database.Ids[idNumber], feeds[i], itemNumber)
+		if database.Urls[i].Enabled {
+			var err error
+			response, err := http.Get(database.Urls[i].Address)
+			if err != nil || response.StatusCode != http.StatusOK {
+				continue
+			}
+			feeds[i], err = parser.Parse(response.Body)
+			if err == nil {
+				for itemNumber := len(feeds[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
+					if filter(feeds[i].Items[itemNumber]) {
+						for idNumber := 0; idNumber < len(database.Ids); idNumber += 1 {
+							sendItem(database.Ids[idNumber], feeds[i], itemNumber)
+						}
 					}
 				}
+			} else {
+				log.Println(database.Urls[i].Address + " пидарасы!")
 			}
-		} else {
-			log.Println(database.Urls[i] + " пидарасы!")
 		}
 	}
 }
@@ -166,6 +183,10 @@ func evolve() {
 		err = json.Unmarshal(data, &database)
 	}
 	n := len(database.Urls)
+	hashes = *treeset.NewWith(uint64Comp)
+	for _, hash := range database.Hashes {
+		hashes.Add(hash)
+	}
 	file, err := os.Open("evolution.txt")
 	if err == nil {
 		scanner := bufio.NewScanner(file)
@@ -174,9 +195,10 @@ func evolve() {
 			if splitted[0] == "+" {
 				if splitted[1] == "h" {
 					res, _ := strconv.ParseUint(splitted[2], 10, 64)
+					hashes.Add(res)
 					database.Hashes = append(database.Hashes, res)
 				} else if splitted[1] == "u" {
-					database.Urls = append(database.Urls, splitted[2])
+					database.Urls = append(database.Urls, link{splitted[2], true})
 					n += 1
 				} else if splitted[1] == "i" {
 					res, _ := strconv.ParseInt(splitted[2], 10, 64)
@@ -230,11 +252,9 @@ func updateHandler() {
 					}
 				}
 			case "start":
-                fmt.Println("Debug5.2")
 				msg := tgbotapi.NewMessage(chatId, "Hi!")
 				_, _ = bot.Send(msg)
 			case "get_ith":
-                fmt.Println("Debug5.3")
 				splitted := strings.Split(args, " ")
 				if len(splitted) > 1 {
 					res1, err1 := strconv.Atoi(splitted[0])
@@ -248,17 +268,16 @@ func updateHandler() {
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Not a number"))
 				}
 			case "add_feed":
-                fmt.Println("Debug5.4")
 				if _, err := url.Parse(args); err == nil {
 					feed, err := parser.ParseURL(args)
 					if err == nil {
 						feeds = append(feeds, feed)
-						database.Urls = append(database.Urls, args)
+						database.Urls = append(database.Urls, link{args, true})
 						_, _ = w.WriteString("+ u " + args + "\n")
 						_ = w.Sync()
 						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: " + strconv.Itoa(len(feeds) - 1)))
 					} else {
-
+						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed"))
 					}
 				} else {
 					msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
@@ -279,10 +298,8 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
-	database = db{}
 	feeds = []*gofeed.Feed{}
 	parser = gofeed.NewParser()
-	bot.Debug = false
 	evolve()
 	w, err = os.Create("evolution.txt")
 	go updateHandler()
