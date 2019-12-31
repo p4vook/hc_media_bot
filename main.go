@@ -7,6 +7,7 @@ import (
 	"github.com/emirpasic/gods/sets/treeset"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/mmcdole/gofeed"
+	"golang.org/x/net/proxy"
 	"hash/fnv"
 	"html"
 	"io"
@@ -289,11 +290,13 @@ func updateHandler() {
 }
 
 func main() {
-	proxyURL, err := url.Parse(lookup("HTTP_PROXY"))
+	dialer, err := proxy.SOCKS5("tcp", lookup("proxy_url"), proxy.Auth{lookup("PROXY_USERNAME"), lookup("PROXY_PASSWORD")}, proxy.Direct)
 	if err != nil {
-		log.Fatal("Invalid HTTP proxy URL")
+		log.Fatal("Invalid SOCKS5 proxy URL")
 	}
-	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	transport := &http.Transport{}
+	client := &http.Client{Transport: transport}
+	transport.Dial = dialer.Dial
 	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), client)
 	if err != nil {
 		log.Panic(err)
