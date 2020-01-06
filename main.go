@@ -88,7 +88,7 @@ func toHashTag(category string) string {
 	category = strings.ReplaceAll(category, "c++", "cpp")
 	for _, r := range category {
 		x := replacement(r)
-		if (x == "_" && res[len(res) - 1] != '_') || x != "_" {
+		if (x == "_" && res[len(res)-1] != '_') || x != "_" {
 			res += x
 		}
 	}
@@ -235,60 +235,60 @@ func updateHandler() {
 		log.Panic(err)
 	}
 	for update := range updates {
-        if update.Message != nil {
-            chatId := update.Message.Chat.ID
-            if update.Message.IsCommand() {
-                args := update.Message.CommandArguments()
-                switch update.Message.Command() {
-                case "add_chat_id":
-                    res, err := strconv.ParseInt(args, 10, 64)
-                    if err == nil {
-                        msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
-                        if err == nil {
-                            fmt.Println(msg.MessageID)
-                            tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID)
-                            database.Ids = append(database.Ids, res)
-                            _, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
-                            _ = w.Sync()
-                            _, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
-                        } else {
-                            _, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that bot has access to this chat"))
-                        }
-                    }
-                case "start":
-                    msg := tgbotapi.NewMessage(chatId, "Hi!")
-                    _, _ = bot.Send(msg)
-                case "get_ith":
-                    splitted := strings.Split(args, " ")
-                    if len(splitted) > 1 {
-                        res1, err1 := strconv.Atoi(splitted[0])
-                        res2, err2 := strconv.Atoi(splitted[1])
-                        if err1 == nil && err2 == nil && res1 < len(feeds) && sendItem(chatId, feeds[res1], res2) {
-                        } else {
-                            msg := tgbotapi.NewMessage(chatId, "Check arguments")
-                            _, _ = bot.Send(msg)
-                        }
-                    } else {
-                        _, _ = bot.Send(tgbotapi.NewMessage(chatId, "Not a number"))
-                    }
-                case "add_feed":
-                    if _, err := url.Parse(args); err == nil {
-                        feed, err := parser.ParseURL(args)
-                        if err == nil {
-                            feeds = append(feeds, feed)
-                            database.Urls = append(database.Urls, link{args, true})
-                            _, _ = w.WriteString("+ u " + args + "\n")
-                            _ = w.Sync()
-                            _, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: "+strconv.Itoa(len(feeds)-1)))
-                        } else {
-                            _, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed"))
-                        }
-                    } else {
-                        msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
-                        _, _ = bot.Send(msg)
-                    }
-                }
-            }
+		if update.Message != nil {
+			chatId := update.Message.Chat.ID
+			if update.Message.IsCommand() {
+				args := update.Message.CommandArguments()
+				switch update.Message.Command() {
+				case "add_chat_id":
+					res, err := strconv.ParseInt(args, 10, 64)
+					if err == nil {
+						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
+						if err == nil {
+							fmt.Println(msg.MessageID)
+							tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID)
+							database.Ids = append(database.Ids, res)
+							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
+							_ = w.Sync()
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
+						} else {
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that bot has access to this chat"))
+						}
+					}
+				case "start":
+					msg := tgbotapi.NewMessage(chatId, "Hi!")
+					_, _ = bot.Send(msg)
+				case "get_ith":
+					splitted := strings.Split(args, " ")
+					if len(splitted) > 1 {
+						res1, err1 := strconv.Atoi(splitted[0])
+						res2, err2 := strconv.Atoi(splitted[1])
+						if err1 == nil && err2 == nil && res1 < len(feeds) && sendItem(chatId, feeds[res1], res2) {
+						} else {
+							msg := tgbotapi.NewMessage(chatId, "Check arguments")
+							_, _ = bot.Send(msg)
+						}
+					} else {
+						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Not a number"))
+					}
+				case "add_feed":
+					if _, err := url.Parse(args); err == nil {
+						feed, err := parser.ParseURL(args)
+						if err == nil {
+							feeds = append(feeds, feed)
+							database.Urls = append(database.Urls, link{args, true})
+							_, _ = w.WriteString("+ u " + args + "\n")
+							_ = w.Sync()
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: "+strconv.Itoa(len(feeds)-1)))
+						} else {
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed"))
+						}
+					} else {
+						msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
+						_, _ = bot.Send(msg)
+					}
+				}
+			}
 		}
 	}
 }
