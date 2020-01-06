@@ -24,7 +24,7 @@ import (
 	"unicode"
 )
 
-const d = 5 * 1000 * 1000 // sleep duration in nanoseconds
+const d = 5 * 60 * 1000 * 1000 * 1000 // sleep duration in nanoseconds
 
 type link struct {
 	Address string
@@ -88,7 +88,7 @@ func toHashTag(category string) string {
 	category = strings.ReplaceAll(category, "c++", "cpp")
 	for _, r := range category {
 		x := replacement(r)
-		if (x == "_" && res[len(res)-1] != '_') || x != "_" {
+		if (x == "_" && res[len(res) - 1] != '_') || x != "_" {
 			res += x
 		}
 	}
@@ -222,8 +222,8 @@ func evolve() {
 
 func startPolling() {
 	for {
-		time.Sleep(d)
 		go update()
+		time.Sleep(d)
 	}
 }
 
