@@ -45,8 +45,8 @@ var hashes treeset.Set
 var database db
 
 func lookup(envName string) string {
-	res, ok := os.LookupEnv(envName)
-	if !ok {
+	res, found := os.LookupEnv(envName)
+	if !found {
 		log.Fatal("Please set the " + envName + " environmental variable.")
 	}
 	return res
@@ -302,14 +302,17 @@ func main() {
 
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
 	client := &http.Client{Transport: transport}
+	log.Println("Creating bot API...")
 	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), client)
 	if err != nil {
 		log.Panic(err)
 	}
 	feeds = []*gofeed.Feed{}
 	parser = gofeed.NewParser()
+	fmt.Println("Evolving db...")
 	evolve()
 	w, err = os.Create("evolution.txt")
 	go updateHandler()
+	fmt.Println("Starting polling...")
 	startPolling()
 }
