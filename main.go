@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/emirpasic/gods/sets/treeset"
 	"github.com/go-telegram-bot-api/telegram-bot-api"
 	"github.com/mmcdole/gofeed"
@@ -115,18 +114,18 @@ func formatCategories(item *gofeed.Item) string {
 	return res
 }
 
-func formatItem(feed *gofeed.Feed, itemNumber int) *string {
+func formatItem(feed *gofeed.Feed, itemNumber int) string {
 	item := feed.Items[itemNumber]
 	res := "[" + html.EscapeString(feed.Title) + "]\n<b>" +
 		html.EscapeString(item.Title) + "</b>\n" +
 		html.EscapeString(formatCategories(item)) + "\n\n" +
 		"<a href=\"" + html.EscapeString(item.Link) + "\">Читать</a>"
-	return &res
+	return res
 }
 
 func sendItem(chatID int64, feed *gofeed.Feed, itemNumber int) bool {
-	if itemNumber < len(feed.Items) {
-		msg := tgbotapi.NewMessage(chatID, *formatItem(feed, itemNumber))
+	if feed != nil && feed.Items != nil && itemNumber < len(feed.Items) {
+		msg := tgbotapi.NewMessage(chatID, formatItem(feed, itemNumber))
 		msg.ParseMode = "HTML"
 		_, _ = bot.Send(msg)
 		return true
@@ -135,33 +134,44 @@ func sendItem(chatID int64, feed *gofeed.Feed, itemNumber int) bool {
 	}
 }
 
-func removeGetArgs(u string) string {
-	parsed, _ := url.Parse(u)
-	parsed.RawQuery = ""
-	parsed.Fragment = ""
-	return parsed.String()
+func removeGetArgs(u string) (string, error) {
+	parsed, err := url.Parse(u)
+	if err == nil {
+		parsed.RawQuery = ""
+		parsed.Fragment = ""
+		return parsed.String(), nil
+	} else {
+		return "", err
+	}
 }
 
 func filter(item *gofeed.Item) bool {
 	hasher := fnv.New64a()
-	_, _ = io.WriteString(hasher, removeGetArgs(item.Link))
-	hash := hasher.Sum64()
-	res := hashes.Contains(hash)
-	if !res {
-		hashes.Add(hash)
-		_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
-		_ = w.Sync()
+	withoutGetArgs, err := removeGetArgs(item.Link)
+	if err == nil {
+		_, err = io.WriteString(hasher, withoutGetArgs)
+		if err == nil {
+			hash := hasher.Sum64()
+			res := hashes.Contains(hash)
+			if !res {
+				hashes.Add(hash)
+				_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
+				_ = w.Sync()
+				return true
+			}
+		}
+		return false
+	} else {
 		return true
 	}
-	return false
 }
 
 func update() {
 	for i := 0; i < len(database.Urls); i += 1 {
 		if database.Urls[i].Enabled {
-			var err error
 			response, err := http.Get(database.Urls[i].Address)
 			if err != nil || response.StatusCode != http.StatusOK {
+				log.Println("Error when fetching URL "+database.Urls[i].Address+": ", err)
 				continue
 			}
 			feeds[i], err = parser.Parse(response.Body)
@@ -174,7 +184,7 @@ func update() {
 					}
 				}
 			} else {
-				log.Println(database.Urls[i].Address + " пидарасы!")
+				log.Println("Invalid RSS on address " + database.Urls[i].Address)
 			}
 		}
 	}
@@ -194,30 +204,47 @@ func evolve() {
 	if err == nil {
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
-			splitted := strings.Split(scanner.Text(), " ")
-			if splitted[0] == "+" {
-				if splitted[1] == "h" {
-					res, _ := strconv.ParseUint(splitted[2], 10, 64)
-					hashes.Add(res)
-					database.Hashes = append(database.Hashes, res)
-				} else if splitted[1] == "u" {
-					database.Urls = append(database.Urls, link{splitted[2], true})
-					n += 1
-				} else if splitted[1] == "i" {
-					res, _ := strconv.ParseInt(splitted[2], 10, 64)
-					database.Ids = append(database.Ids, res)
+			split := strings.Split(scanner.Text(), " ")
+			if len(split) > 0 {
+				if split[0] == "+" {
+					if len(split) == 3 {
+						if split[1] == "h" {
+							res, _ := strconv.ParseUint(split[2], 10, 64)
+							hashes.Add(res)
+							database.Hashes = append(database.Hashes, res)
+						} else if split[1] == "u" {
+							database.Urls = append(database.Urls, link{split[2], true})
+							n += 1
+						} else if split[1] == "i" {
+							res, _ := strconv.ParseInt(split[2], 10, 64)
+							database.Ids = append(database.Ids, res)
+						}
+					} else {
+						log.Println("Wrong number of arguments on this line: " + scanner.Text() + " in evolution.txt")
+					}
 				}
+			} else {
+				log.Println("Empty line when parsing evolution.txt")
 			}
 		}
 	}
 	feeds = make([]*gofeed.Feed, n)
 	data, err = json.Marshal(database)
+	if err != nil {
+		log.Panic(err)
+	}
 	file, err = os.Create("db.json")
 	if err != nil {
 		log.Panic(err)
 	}
-	_, _ = file.Write(data)
-	_ = file.Sync()
+	_, err = file.Write(data)
+	if err != nil {
+		log.Panic(err)
+	}
+	err = file.Sync()
+	if err != nil {
+		log.Panic(err)
+	}
 }
 
 func startPolling() {
@@ -235,7 +262,7 @@ func updateHandler() {
 		log.Panic(err)
 	}
 	for update := range updates {
-		if update.Message != nil {
+		if update.Message != nil && update.Message.Chat != nil {
 			chatId := update.Message.Chat.ID
 			if update.Message.IsCommand() {
 				args := update.Message.CommandArguments()
@@ -245,7 +272,6 @@ func updateHandler() {
 					if err == nil {
 						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
 						if err == nil {
-							fmt.Println(msg.MessageID)
 							tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID)
 							database.Ids = append(database.Ids, res)
 							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
@@ -256,20 +282,19 @@ func updateHandler() {
 						}
 					}
 				case "start":
-					msg := tgbotapi.NewMessage(chatId, "Hi!")
-					_, _ = bot.Send(msg)
+					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Hi!"))
+				case "ping":
+					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Pong."))
 				case "get_ith":
-					splitted := strings.Split(args, " ")
-					if len(splitted) > 1 {
-						res1, err1 := strconv.Atoi(splitted[0])
-						res2, err2 := strconv.Atoi(splitted[1])
-						if err1 == nil && err2 == nil && res1 < len(feeds) && sendItem(chatId, feeds[res1], res2) {
-						} else {
-							msg := tgbotapi.NewMessage(chatId, "Check arguments")
-							_, _ = bot.Send(msg)
+					split := strings.Split(args, " ")
+					if len(split) > 1 {
+						res1, err1 := strconv.Atoi(split[0])
+						res2, err2 := strconv.Atoi(split[1])
+						if err1 != nil || err2 != nil || res1 <= 0 || res1 > len(feeds) || !sendItem(chatId, feeds[res1-1], res2) {
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check arguments"))
 						}
 					} else {
-						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Not a number"))
+						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Please specify feed index and item number"))
 					}
 				case "add_feed":
 					if _, err := url.Parse(args); err == nil {
@@ -278,10 +303,13 @@ func updateHandler() {
 							feeds = append(feeds, feed)
 							database.Urls = append(database.Urls, link{args, true})
 							_, _ = w.WriteString("+ u " + args + "\n")
-							_ = w.Sync()
+							err = w.Sync()
+							if err != nil {
+								log.Panic(err)
+							}
 							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: "+strconv.Itoa(len(feeds)-1)))
 						} else {
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed"))
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed."))
 						}
 					} else {
 						msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
@@ -299,7 +327,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Invalid SOCKS5 proxy URL")
 	}
-
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
 	client := &http.Client{Transport: transport}
 	log.Println("Creating bot API...")
@@ -309,10 +336,10 @@ func main() {
 	}
 	feeds = []*gofeed.Feed{}
 	parser = gofeed.NewParser()
-	fmt.Println("Evolving db...")
+	log.Println("Evolving db...")
 	evolve()
 	w, err = os.Create("evolution.txt")
 	go updateHandler()
-	fmt.Println("Starting polling...")
+	log.Println("Starting polling...")
 	startPolling()
 }
