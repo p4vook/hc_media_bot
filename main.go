@@ -82,15 +82,15 @@ func replacement(r rune) string {
 	return res
 }
 
-func toHashTag(category string) string{
+func toHashTag(category string) string {
 	res := "#"
 	category = strings.ReplaceAll(category, "*nix", "unix")
 	category = strings.ReplaceAll(category, "c++", "cpp")
 	for _, r := range category {
-        x := replacement(r)
-        if (x == "_" && res[len(res) - 1] != '_') || x != "_" {
-            res += x
-        }
+		x := replacement(r)
+		if (x == "_" && res[len(res)-1] != '_') || x != "_" {
+			res += x
+		}
 	}
 	return res
 }
@@ -99,7 +99,7 @@ func formatCategories(item *gofeed.Item) string {
 	n := len(item.Categories)
 	categories := make([]string, n)
 	s := treeset.NewWithStringComparator()
-	for i := 0; i < n; i += 1{
+	for i := 0; i < n; i += 1 {
 		categories[i] = toHashTag(item.Categories[i])
 	}
 	for i := 0; i < n; i += 1 {
@@ -235,8 +235,8 @@ func updateHandler() {
 		log.Panic(err)
 	}
 	for update := range updates {
-		chatId := update.Message.Chat.ID
 		if update.Message.IsCommand() {
+			chatId := update.Message.Chat.ID
 			args := update.Message.CommandArguments()
 			switch update.Message.Command() {
 			case "add_chat_id":
@@ -278,7 +278,7 @@ func updateHandler() {
 						database.Urls = append(database.Urls, link{args, true})
 						_, _ = w.WriteString("+ u " + args + "\n")
 						_ = w.Sync()
-						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: " + strconv.Itoa(len(feeds) - 1)))
+						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: "+strconv.Itoa(len(feeds)-1)))
 					} else {
 						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed"))
 					}
