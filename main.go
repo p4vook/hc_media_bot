@@ -23,7 +23,7 @@ import (
 	"unicode"
 )
 
-const d = 5 * 60 * 1000 * 1000 * 1000 // sleep duration in nanoseconds
+const d = 60 * 1000 * 1000 * 1000 // sleep duration in nanoseconds
 
 type link struct {
 	Address string
