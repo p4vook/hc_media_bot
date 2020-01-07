@@ -35,6 +35,7 @@ type db struct {
 	Hashes []uint64
 	Urls   []link
 	Ids    []int64
+	Mux    sync.Mutex
 }
 
 type safeFeeds struct {
@@ -174,6 +175,7 @@ func filter(item *gofeed.Item) bool {
 
 func updateFeeds() {
 	feeds.Mux.Lock()
+	database.Mux.Lock()
 	for i := 0; i < len(database.Urls); i += 1 {
 		if database.Urls[i].Enabled {
 			response, err := http.Get(database.Urls[i].Address)
@@ -195,10 +197,12 @@ func updateFeeds() {
 			}
 		}
 	}
+	defer database.Mux.Unlock()
 	defer feeds.Mux.Unlock()
 }
 
 func evolve() {
+	database.Mux.Lock()
 	data, err := ioutil.ReadFile("db.json")
 	if err == nil {
 		err = json.Unmarshal(data, &database)
@@ -236,7 +240,9 @@ func evolve() {
 			}
 		}
 	}
+	feeds.Mux.Lock()
 	feeds.FeedArray = make([]*gofeed.Feed, n)
+	feeds.Mux.Unlock()
 	data, err = json.Marshal(database)
 	if err != nil {
 		log.Panic(err)
@@ -253,6 +259,7 @@ func evolve() {
 	if err != nil {
 		log.Panic(err)
 	}
+	database.Mux.Unlock()
 }
 
 func startPolling() {
@@ -281,7 +288,9 @@ func updateHandler() {
 						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
 						if err == nil {
 							_, _ = bot.DeleteMessage(tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID))
+							database.Mux.Lock()
 							database.Ids = append(database.Ids, res)
+							database.Mux.Unlock()
 							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
 							_ = w.Sync()
 							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
@@ -297,8 +306,12 @@ func updateHandler() {
 					if _, err := url.Parse(args); err == nil {
 						feed, err := parser.ParseURL(args)
 						if err == nil {
+							feeds.Mux.Lock()
 							feeds.FeedArray = append(feeds.FeedArray, feed)
+							feeds.Mux.Unlock()
+							database.Mux.Lock()
 							database.Urls = append(database.Urls, link{args, true})
+							database.Mux.Unlock()
 							_, _ = w.WriteString("+ u " + args + "\n")
 							err = w.Sync()
 							if err != nil {
