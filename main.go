@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -36,10 +37,15 @@ type db struct {
 	Ids    []int64
 }
 
+type safeFeeds struct {
+	FeedArray []*gofeed.Feed
+	Mux       sync.Mutex
+}
+
 var bot *tgbotapi.BotAPI
 var parser *gofeed.Parser
-var feeds []*gofeed.Feed
 var w *os.File
+var feeds safeFeeds
 var hashes treeset.Set
 var database db
 
@@ -166,7 +172,8 @@ func filter(item *gofeed.Item) bool {
 	}
 }
 
-func update() {
+func updateFeeds() {
+	feeds.Mux.Lock()
 	for i := 0; i < len(database.Urls); i += 1 {
 		if database.Urls[i].Enabled {
 			response, err := http.Get(database.Urls[i].Address)
@@ -174,12 +181,12 @@ func update() {
 				log.Println("Error when fetching URL "+database.Urls[i].Address+": ", err)
 				continue
 			}
-			feeds[i], err = parser.Parse(response.Body)
+			feeds.FeedArray[i], err = parser.Parse(response.Body)
 			if err == nil {
-				for itemNumber := len(feeds[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
-					if filter(feeds[i].Items[itemNumber]) {
+				for itemNumber := len(feeds.FeedArray[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
+					if filter(feeds.FeedArray[i].Items[itemNumber]) {
 						for idNumber := 0; idNumber < len(database.Ids); idNumber += 1 {
-							sendItem(database.Ids[idNumber], feeds[i], itemNumber)
+							sendItem(database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
 						}
 					}
 				}
@@ -188,6 +195,7 @@ func update() {
 			}
 		}
 	}
+	defer feeds.Mux.Unlock()
 }
 
 func evolve() {
@@ -228,7 +236,7 @@ func evolve() {
 			}
 		}
 	}
-	feeds = make([]*gofeed.Feed, n)
+	feeds.FeedArray = make([]*gofeed.Feed, n)
 	data, err = json.Marshal(database)
 	if err != nil {
 		log.Panic(err)
@@ -249,7 +257,7 @@ func evolve() {
 
 func startPolling() {
 	for {
-		go update()
+		go updateFeeds()
 		time.Sleep(d)
 	}
 }
@@ -272,7 +280,7 @@ func updateHandler() {
 					if err == nil {
 						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
 						if err == nil {
-							tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID)
+							_, _ = bot.DeleteMessage(tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID))
 							database.Ids = append(database.Ids, res)
 							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
 							_ = w.Sync()
@@ -285,29 +293,19 @@ func updateHandler() {
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Hi!"))
 				case "ping":
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Pong."))
-				case "get_ith":
-					split := strings.Split(args, " ")
-					if len(split) > 1 {
-						res1, err1 := strconv.Atoi(split[0])
-						res2, err2 := strconv.Atoi(split[1])
-						if err1 != nil || err2 != nil || res1 <= 0 || res1 > len(feeds) || !sendItem(chatId, feeds[res1-1], res2) {
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check arguments"))
-						}
-					} else {
-						_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Please specify feed index and item number"))
-					}
 				case "add_feed":
 					if _, err := url.Parse(args); err == nil {
 						feed, err := parser.ParseURL(args)
 						if err == nil {
-							feeds = append(feeds, feed)
+							feeds.FeedArray = append(feeds.FeedArray, feed)
 							database.Urls = append(database.Urls, link{args, true})
 							_, _ = w.WriteString("+ u " + args + "\n")
 							err = w.Sync()
 							if err != nil {
 								log.Panic(err)
 							}
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done! New feed index: "+strconv.Itoa(len(feeds)-1)))
+							go updateFeeds()
+							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
 						} else {
 							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed."))
 						}
@@ -315,6 +313,9 @@ func updateHandler() {
 						msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
 						_, _ = bot.Send(msg)
 					}
+				case "update_feeds":
+					go updateFeeds()
+					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Updating feeds..."))
 				}
 			}
 		}
@@ -334,7 +335,6 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
-	feeds = []*gofeed.Feed{}
 	parser = gofeed.NewParser()
 	log.Println("Evolving db...")
 	evolve()
