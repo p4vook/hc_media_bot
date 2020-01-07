@@ -69,7 +69,7 @@ func replacement(r rune) string {
 		res = "_"
 	} else if r == '!' || r == '?' || r == '(' || r == ')' || r == '\'' || r == '"' || r == '«' || r == '»' {
 		res = ""
-	} else if r == '&' || r == '+' {
+	} else if r == '&' || r == '+' || r == ';' {
 		res = "_"
 	} else if r == '#' {
 		res = "sharp"
@@ -85,9 +85,9 @@ func toHashTag(category string) string {
 	res := "#"
 	category = strings.ReplaceAll(category, "*nix", "unix")
 	category = strings.ReplaceAll(category, "c++", "cpp")
-	for _, r := range category {
+	for i, r := range category {
 		x := replacement(r)
-		if (x == "_" && res[len(res)-1] != '_') || x != "_" {
+		if (x == "_" && res[len(res)-1] != '_' && i != 0 && i != len(category)-1) || x != "_" {
 			res += x
 		}
 	}
@@ -146,12 +146,12 @@ func removeGetArgs(u string) (string, error) {
 }
 
 func filter(item *gofeed.Item) bool {
-	hasher := fnv.New64a()
+	hash64 := fnv.New64a()
 	withoutGetArgs, err := removeGetArgs(item.Link)
 	if err == nil {
-		_, err = io.WriteString(hasher, withoutGetArgs)
+		_, err = io.WriteString(hash64, withoutGetArgs)
 		if err == nil {
-			hash := hasher.Sum64()
+			hash := hash64.Sum64()
 			res := hashes.Contains(hash)
 			if !res {
 				hashes.Add(hash)
