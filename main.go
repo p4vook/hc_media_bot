@@ -201,7 +201,7 @@ func updateFeeds() {
 			}
 		}
 	}
-	defer safeDatabase.Mux.Unlock()
+	defer safeDatabase.Mux.RUnlock()
 	defer feeds.Mux.Unlock()
 }
 
