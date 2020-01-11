@@ -39,7 +39,7 @@ type db struct {
 
 type safeDB struct {
 	Database db
-	Mux Sync.RWMutex
+	Mux sync.RWMutex
 }
 
 type safeFeeds struct {
