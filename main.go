@@ -24,7 +24,7 @@ import (
 	"unicode"
 )
 
-const d = 60 * 1000 * 1000 * 1000 // sleep duration in nanoseconds
+const d = 60 // sleep duration in seconds
 
 type link struct {
 	Address string
@@ -35,7 +35,11 @@ type db struct {
 	Hashes []uint64
 	Urls   []link
 	Ids    []int64
-	Mux    sync.Mutex
+}
+
+type safeDB struct {
+	Database db
+	Mux Sync.RWMutex
 }
 
 type safeFeeds struct {
@@ -48,7 +52,7 @@ var parser *gofeed.Parser
 var w *os.File
 var feeds safeFeeds
 var hashes treeset.Set
-var database db
+var safeDatabase safeDB
 
 func lookup(envName string) string {
 	res, found := os.LookupEnv(envName)
@@ -175,41 +179,41 @@ func filter(item *gofeed.Item) bool {
 
 func updateFeeds() {
 	feeds.Mux.Lock()
-	database.Mux.Lock()
-	for i := 0; i < len(database.Urls); i += 1 {
-		if database.Urls[i].Enabled {
-			response, err := http.Get(database.Urls[i].Address)
+	safeDatabase.Mux.RLock()
+	for i := 0; i < len(safeDatabase.database.Urls); i += 1 {
+		if safeDatabase.database.Urls[i].Enabled {
+			response, err := http.Get(safeDatabase.database.Urls[i].Address)
 			if err != nil || response.StatusCode != http.StatusOK {
-				log.Println("Error when fetching URL "+database.Urls[i].Address+": ", err)
+				log.Println("Error when fetching URL "+safeDatabase.database.Urls[i].Address+": ", err)
 				continue
 			}
 			feeds.FeedArray[i], err = parser.Parse(response.Body)
 			if err == nil {
 				for itemNumber := len(feeds.FeedArray[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
 					if filter(feeds.FeedArray[i].Items[itemNumber]) {
-						for idNumber := 0; idNumber < len(database.Ids); idNumber += 1 {
-							sendItem(database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
+						for idNumber := 0; idNumber < len(safeDatabase.database.Ids); idNumber += 1 {
+							sendItem(safeDatabase.database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
 						}
 					}
 				}
 			} else {
-				log.Println("Invalid RSS on address " + database.Urls[i].Address)
+				log.Println("Invalid RSS on address " + safeDatabase.database.Urls[i].Address)
 			}
 		}
 	}
-	defer database.Mux.Unlock()
-	defer feeds.Mux.Unlock()
+	defer safeDatabase.Mux.Unlock()
+	defer feeds.Mux.RUnlock()
 }
 
 func evolve() {
-	database.Mux.Lock()
+	safeDatabase.Mux.Lock()
 	data, err := ioutil.ReadFile("db.json")
 	if err == nil {
-		err = json.Unmarshal(data, &database)
+		err = json.Unmarshal(data, &safeDatabase.database)
 	}
-	n := len(database.Urls)
+	n := len(safeDatabase.database.Urls)
 	hashes = *treeset.NewWith(uint64Comp)
-	for _, hash := range database.Hashes {
+	for _, hash := range safeDatabase.database.Hashes {
 		hashes.Add(hash)
 	}
 	file, err := os.Open("evolution.txt")
@@ -223,13 +227,13 @@ func evolve() {
 						if split[1] == "h" {
 							res, _ := strconv.ParseUint(split[2], 10, 64)
 							hashes.Add(res)
-							database.Hashes = append(database.Hashes, res)
+							safeDatabase.database.Hashes = append(safeDatabase.database.Hashes, res)
 						} else if split[1] == "u" {
-							database.Urls = append(database.Urls, link{split[2], true})
+							safeDatabase.database.Urls = append(safeDatabase.database.Urls, link{split[2], true})
 							n += 1
 						} else if split[1] == "i" {
 							res, _ := strconv.ParseInt(split[2], 10, 64)
-							database.Ids = append(database.Ids, res)
+							safeDatabase.database.Ids = append(safeDatabase.database.Ids, res)
 						}
 					} else {
 						log.Println("Wrong number of arguments on this line: " + scanner.Text() + " in evolution.txt")
@@ -243,7 +247,7 @@ func evolve() {
 	feeds.Mux.Lock()
 	feeds.FeedArray = make([]*gofeed.Feed, n)
 	feeds.Mux.Unlock()
-	data, err = json.Marshal(database)
+	data, err = json.Marshal(safeDatabase.database)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -259,13 +263,13 @@ func evolve() {
 	if err != nil {
 		log.Panic(err)
 	}
-	database.Mux.Unlock()
+	safeDatabase.Mux.Unlock()
 }
 
 func startPolling() {
 	for {
 		go updateFeeds()
-		time.Sleep(d)
+		time.Sleep(time.Second * d)
 	}
 }
 
@@ -288,9 +292,9 @@ func updateHandler() {
 						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
 						if err == nil {
 							_, _ = bot.DeleteMessage(tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID))
-							database.Mux.Lock()
-							database.Ids = append(database.Ids, res)
-							database.Mux.Unlock()
+							safeDatabase.Mux.Lock()
+							safeDatabase.database.Ids = append(safeDatabase.database.Ids, res)
+							safeDatabase.Mux.Unlock()
 							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
 							_ = w.Sync()
 							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
@@ -309,9 +313,9 @@ func updateHandler() {
 							feeds.Mux.Lock()
 							feeds.FeedArray = append(feeds.FeedArray, feed)
 							feeds.Mux.Unlock()
-							database.Mux.Lock()
-							database.Urls = append(database.Urls, link{args, true})
-							database.Mux.Unlock()
+							safeDatabase.Mux.Lock()
+							safeDatabase.database.Urls = append(safeDatabase.database.Urls, link{args, true})
+							safeDatabase.Mux.Unlock()
 							_, _ = w.WriteString("+ u " + args + "\n")
 							err = w.Sync()
 							if err != nil {
