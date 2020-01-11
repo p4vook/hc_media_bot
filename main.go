@@ -180,40 +180,40 @@ func filter(item *gofeed.Item) bool {
 func updateFeeds() {
 	feeds.Mux.Lock()
 	safeDatabase.Mux.RLock()
-	for i := 0; i < len(safeDatabase.database.Urls); i += 1 {
-		if safeDatabase.database.Urls[i].Enabled {
-			response, err := http.Get(safeDatabase.database.Urls[i].Address)
+	for i := 0; i < len(safeDatabase.Database.Urls); i += 1 {
+		if safeDatabase.Database.Urls[i].Enabled {
+			response, err := http.Get(safeDatabase.Database.Urls[i].Address)
 			if err != nil || response.StatusCode != http.StatusOK {
-				log.Println("Error when fetching URL "+safeDatabase.database.Urls[i].Address+": ", err)
+				log.Println("Error when fetching URL "+safeDatabase.Database.Urls[i].Address+": ", err)
 				continue
 			}
 			feeds.FeedArray[i], err = parser.Parse(response.Body)
 			if err == nil {
 				for itemNumber := len(feeds.FeedArray[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
 					if filter(feeds.FeedArray[i].Items[itemNumber]) {
-						for idNumber := 0; idNumber < len(safeDatabase.database.Ids); idNumber += 1 {
-							sendItem(safeDatabase.database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
+						for idNumber := 0; idNumber < len(safeDatabase.Database.Ids); idNumber += 1 {
+							sendItem(safeDatabase.Database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
 						}
 					}
 				}
 			} else {
-				log.Println("Invalid RSS on address " + safeDatabase.database.Urls[i].Address)
+				log.Println("Invalid RSS on address " + safeDatabase.Database.Urls[i].Address)
 			}
 		}
 	}
 	defer safeDatabase.Mux.Unlock()
-	defer feeds.Mux.RUnlock()
+	defer feeds.Mux.Unlock()
 }
 
 func evolve() {
 	safeDatabase.Mux.Lock()
 	data, err := ioutil.ReadFile("db.json")
 	if err == nil {
-		err = json.Unmarshal(data, &safeDatabase.database)
+		err = json.Unmarshal(data, &safeDatabase.Database)
 	}
-	n := len(safeDatabase.database.Urls)
+	n := len(safeDatabase.Database.Urls)
 	hashes = *treeset.NewWith(uint64Comp)
-	for _, hash := range safeDatabase.database.Hashes {
+	for _, hash := range safeDatabase.Database.Hashes {
 		hashes.Add(hash)
 	}
 	file, err := os.Open("evolution.txt")
@@ -227,13 +227,13 @@ func evolve() {
 						if split[1] == "h" {
 							res, _ := strconv.ParseUint(split[2], 10, 64)
 							hashes.Add(res)
-							safeDatabase.database.Hashes = append(safeDatabase.database.Hashes, res)
+							safeDatabase.Database.Hashes = append(safeDatabase.Database.Hashes, res)
 						} else if split[1] == "u" {
-							safeDatabase.database.Urls = append(safeDatabase.database.Urls, link{split[2], true})
+							safeDatabase.Database.Urls = append(safeDatabase.Database.Urls, link{split[2], true})
 							n += 1
 						} else if split[1] == "i" {
 							res, _ := strconv.ParseInt(split[2], 10, 64)
-							safeDatabase.database.Ids = append(safeDatabase.database.Ids, res)
+							safeDatabase.Database.Ids = append(safeDatabase.Database.Ids, res)
 						}
 					} else {
 						log.Println("Wrong number of arguments on this line: " + scanner.Text() + " in evolution.txt")
@@ -247,7 +247,7 @@ func evolve() {
 	feeds.Mux.Lock()
 	feeds.FeedArray = make([]*gofeed.Feed, n)
 	feeds.Mux.Unlock()
-	data, err = json.Marshal(safeDatabase.database)
+	data, err = json.Marshal(safeDatabase.Database)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -293,7 +293,7 @@ func updateHandler() {
 						if err == nil {
 							_, _ = bot.DeleteMessage(tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID))
 							safeDatabase.Mux.Lock()
-							safeDatabase.database.Ids = append(safeDatabase.database.Ids, res)
+							safeDatabase.Database.Ids = append(safeDatabase.Database.Ids, res)
 							safeDatabase.Mux.Unlock()
 							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
 							_ = w.Sync()
@@ -314,7 +314,7 @@ func updateHandler() {
 							feeds.FeedArray = append(feeds.FeedArray, feed)
 							feeds.Mux.Unlock()
 							safeDatabase.Mux.Lock()
-							safeDatabase.database.Urls = append(safeDatabase.database.Urls, link{args, true})
+							safeDatabase.Database.Urls = append(safeDatabase.Database.Urls, link{args, true})
 							safeDatabase.Mux.Unlock()
 							_, _ = w.WriteString("+ u " + args + "\n")
 							err = w.Sync()
