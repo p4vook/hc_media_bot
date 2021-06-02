@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"github.com/emirpasic/gods/sets/treeset"
 	"gopkg.in/telegram-bot-api.v4"
@@ -393,8 +394,8 @@ func parseConfig(in []byte) (*Config, error) {
 	return &result, err
 }
 
-func readConfig(filename string) (*Config, error) {
-	data, err := ioutil.ReadFile(filename)
+func readConfig(path string) (*Config, error) {
+	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -402,9 +403,12 @@ func readConfig(filename string) (*Config, error) {
 }
 
 func main() {
-	config, err := readConfig("config.yaml") // TODO: command-line config argument
+	var configPath string
+	flag.StringVar(&configPath, "c", "config.yaml", "Specify config path")
+	flag.Parse()
+	config, err := readConfig(configPath)
 	if err != nil {
-		log.Panic(err)
+		log.Fatalf("Failed to read config file %s: %v", configPath, err)
 	}
 	// add back proxy support ?
 //	auth := proxy.Auth{User: lookup("PROXY_USERNAME"), Password: lookup("PROXY_PASSWORD")}
