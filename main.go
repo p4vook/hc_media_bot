@@ -2,33 +2,59 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
+	"flag"
+	"fmt"
 	"github.com/emirpasic/gods/sets/treeset"
-	"github.com/go-telegram-bot-api/telegram-bot-api"
+	"gopkg.in/telegram-bot-api.v4"
 	"github.com/mmcdole/gofeed"
-	"golang.org/x/net/proxy"
 	"hash/fnv"
 	"html"
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+	"gopkg.in/yaml.v2"
 )
 
-const d = 60 // sleep duration in seconds
-
 type link struct {
-	Address string
-	Enabled bool
+	Address	string
+	Enabled	bool
+}
+
+type ItemFormatOptions struct {
+	CategoriesMap	map[string]string	`yaml:"categoriesMap"`
+	LinkOptions struct {
+		IncludeQueryString	bool	`yaml:"includeQueryString"`
+		LinkText		string	`yaml:"linkText"`
+	}					`yaml:"linkOptions"`
+}
+
+type HashingOptions struct {
+	IncludeContent		bool	`yaml:"includeContent"`
+	IncludeQueryString	bool	`yaml:"includeQueryString"`
+}
+
+type Feed struct {
+	URL			string
+	ItemFormatOptions	ItemFormatOptions	`yaml:"itemFormatOptions"`
+	HashingOptions		HashingOptions		`yaml:"HashingOptions"`
+}
+
+type Config struct {
+	BotToken	string		`yaml:"botToken"`
+	PollIntervalStr	string		`yaml:"pollInterval"`
+	PollInterval	time.Duration
+	Feeds		[]Feed
+	ChatIds		[]int64		`yaml:"chatIds"`
 }
 
 type db struct {
@@ -75,77 +101,79 @@ func uint64Comp(a, b interface{}) int {
 }
 
 func replacement(r rune) string {
-	var res string
-	if (8210 <= int(r) && int(r) < 8214) || int(r) == 11834 || int(r) == 11835 || int(r) == 45 || int(r) == 32 {
-		res = "_"
-	} else if r == '!' || r == '?' || r == '(' || r == ')' || r == '\'' || r == '"' || r == '«' || r == '»' {
-		res = ""
-	} else if r == '&' || r == '+' || r == ';' {
-		res = "_"
-	} else if r == '#' {
-		res = "sharp"
-	} else if r == '.' {
-		res = "dot"
-	} else {
-		res = string(unicode.ToLower(r))
+	if unicode.IsLetter(r) || unicode.IsNumber(r) {
+		return string(r)
 	}
-	return res
+	// punctuation, dash
+	if unicode.Is(unicode.Pd, r) {
+		return string("_")
+	}
+	if unicode.IsSpace(r) || r == '&' || r == '+' || r == ';' {
+		return string("_")
+	}
+	return string("")
 }
 
 func toHashTag(category string) string {
+	if len(category) == 0 {
+		return ""
+	}
 	res := "#"
-	category = strings.ReplaceAll(category, "*nix", "unix")
-	category = strings.ReplaceAll(category, "c++", "cpp")
+	if unicode.IsNumber(rune(category[0])) {
+		res += "_"
+	}
 	for i, r := range category {
 		x := replacement(r)
-		if (x == "_" && res[len(res)-1] != '_' && i != 0 && i != len(category)-1) || x != "_" {
+		if x != "_" {
 			res += x
+		} else {
+			// no consequent underscores, no underscores in the beginning
+			// and in the end
+			if (i != 0 && i != len(category) - 1 && res[len(res) - 1] != '_') {
+				res += x
+			}
 		}
 	}
-	return res
-}
-
-func formatCategories(item *gofeed.Item) string {
-	n := len(item.Categories)
-	categories := make([]string, n)
-	s := treeset.NewWithStringComparator()
-	for i := 0; i < n; i += 1 {
-		categories[i] = toHashTag(item.Categories[i])
-	}
-	for i := 0; i < n; i += 1 {
-		if !s.Contains(categories[i]) {
-			s.Add(categories[i])
-		}
-	}
-	values := s.Values()
-	res := ""
-	for index := 0; index < len(values); index += 1 {
-		res += values[index].(string) + " "
-	}
-	return res
-}
-
-func formatItem(feed *gofeed.Feed, itemNumber int) string {
-	item := feed.Items[itemNumber]
-	res := "[" + html.EscapeString(feed.Title) + "]\n<b>" +
-		html.EscapeString(item.Title) + "</b>\n" +
-		html.EscapeString(formatCategories(item)) + "\n\n" +
-		"<a href=\"" + html.EscapeString(item.Link) + "\">Читать</a>"
-	return res
-}
-
-func sendItem(chatID int64, feed *gofeed.Feed, itemNumber int) bool {
-	if feed != nil && feed.Items != nil && itemNumber < len(feed.Items) {
-		msg := tgbotapi.NewMessage(chatID, formatItem(feed, itemNumber))
-		msg.ParseMode = "HTML"
-		_, _ = bot.Send(msg)
-		return true
+	if res != "#" {
+		return res
 	} else {
-		return false
+		return ""
 	}
 }
 
-func removeGetArgs(u string) (string, error) {
+func stringSliceContains(slice []string, s string) bool {
+	for _, v := range slice {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+func (formatOpts *ItemFormatOptions) formatCategories(item *gofeed.Item) string {
+	hashtags := []string{}
+	for _, category := range item.Categories {
+		category = strings.ToLower(category)
+		for k, v := range formatOpts.CategoriesMap {
+			category = strings.Replace(category, k, v, -1)
+		}
+		hashtag := toHashTag(category)
+		if hashtag != "" && !stringSliceContains(hashtags, hashtag) {
+			hashtags = append(hashtags, hashtag)
+		}
+	}
+	sort.Strings(hashtags)
+	res := ""
+	for i, hashtag := range hashtags {
+		res += hashtag
+		if i != len(hashtags) - 1 {
+			res += " "
+		}
+	}
+	return res
+}
+
+func removeQueryString(u string) (string, error) {
 	parsed, err := url.Parse(u)
 	if err == nil {
 		parsed.RawQuery = ""
@@ -156,49 +184,99 @@ func removeGetArgs(u string) (string, error) {
 	}
 }
 
-func filter(item *gofeed.Item) bool {
-	hash64 := fnv.New64a()
-	withoutGetArgs, err := removeGetArgs(item.Link)
-	if err == nil {
-		_, err = io.WriteString(hash64, withoutGetArgs)
-		if err == nil {
-			hash := hash64.Sum64()
-			res := hashes.Contains(hash)
-			if !res {
-				hashes.Add(hash)
-				_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
-				_ = w.Sync()
-				return true
-			}
+func (formatOpts *ItemFormatOptions) formatLink(link string) string {
+	result := link
+	if !formatOpts.LinkOptions.IncludeQueryString {
+		var err error
+		result, err = removeQueryString(result)
+		if err != nil {
+			log.Printf("Invalid item link: %s: %v\n", link, err)
+			result = link
 		}
-		return false
-	} else {
+	}
+	if formatOpts.LinkOptions.LinkText != "" {
+		return "<a href=\"" + html.EscapeString(result) +
+			"\">" + html.EscapeString(formatOpts.LinkOptions.LinkText) + "</a>"
+	}
+	return html.EscapeString(result)
+}
+
+func (formatOpts *ItemFormatOptions) formatItem(feed *gofeed.Feed, itemNumber int) string {
+	item := feed.Items[itemNumber]
+	res := "[" + html.EscapeString(feed.Title) + "]\n<b>" +
+		html.EscapeString(item.Title) + "</b>\n" +
+		html.EscapeString(formatOpts.formatCategories(item)) + "\n\n" +
+		formatOpts.formatLink(item.Link)
+	return res
+}
+
+func sendItem(chatID int64, feed *gofeed.Feed, feedOpts *Feed, itemNumber int) bool {
+	if feed != nil && feed.Items != nil && itemNumber < len(feed.Items) {
+		msg := tgbotapi.NewMessage(chatID, feedOpts.ItemFormatOptions.formatItem(feed, itemNumber))
+		msg.ParseMode = "HTML"
+		_, _ = bot.Send(msg)
 		return true
+	} else {
+		return false
 	}
 }
 
-func updateFeeds() {
+func (opts *HashingOptions) filter(item *gofeed.Item) bool {
+	hash64 := fnv.New64a()
+	toWrite := item.Link
+	if !opts.IncludeQueryString {
+		withoutQueryString, err := removeQueryString(item.Link)
+		if err != nil {
+			fmt.Printf("Error: invalid item link: %s: %v\n", item.Link, err)
+			toWrite = ""
+		}
+		toWrite = withoutQueryString
+	}
+	if opts.IncludeContent {
+		toWrite += "\n"
+		toWrite += item.Content
+	}
+	_, err := io.WriteString(hash64, toWrite)
+	if err != nil {
+		fmt.Printf("Error: failed to hash item: %v\n", err)
+		return true
+	}
+	hash := hash64.Sum64()
+	res := hashes.Contains(hash)
+	if !res {
+		hashes.Add(hash)
+		_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
+		_ = w.Sync()
+		return true
+	}
+	return false
+}
+
+func (config *Config) updateFeeds() {
 	feeds.Mux.Lock()
 	safeDatabase.Mux.RLock()
-	for i := 0; i < len(safeDatabase.Database.Urls); i += 1 {
-		if safeDatabase.Database.Urls[i].Enabled {
-			response, err := http.Get(safeDatabase.Database.Urls[i].Address)
-			if err != nil || response.StatusCode != http.StatusOK {
-				log.Println("Error when fetching URL "+safeDatabase.Database.Urls[i].Address+": ", err)
-				continue
-			}
-			feeds.FeedArray[i], err = parser.Parse(response.Body)
+	log.Printf("Updating feeds\n")
+	for _, feed := range config.Feeds {
+		response, err := http.Get(feed.URL)
+		if err != nil || response.StatusCode != http.StatusOK {
 			if err == nil {
-				for itemNumber := len(feeds.FeedArray[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
-					if filter(feeds.FeedArray[i].Items[itemNumber]) {
-						for idNumber := 0; idNumber < len(safeDatabase.Database.Ids); idNumber += 1 {
-							sendItem(safeDatabase.Database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
-						}
+				err = fmt.Errorf("Bad status code: %d", response.StatusCode)
+			}
+			log.Printf("Error when fetching URL %s: %v\n", feed.URL, err)
+			continue
+		}
+		parsedFeed, err := parser.Parse(response.Body)
+		if err == nil {
+			for itemNumber := len(parsedFeed.Items) - 1; itemNumber >= 0; itemNumber -= 1 {
+				item := parsedFeed.Items[itemNumber]
+				if feed.HashingOptions.filter(item) {
+					for _, chatId := range config.ChatIds {
+						sendItem(chatId, parsedFeed, &feed, itemNumber)
 					}
 				}
-			} else {
-				log.Println("Invalid RSS on address " + safeDatabase.Database.Urls[i].Address)
 			}
+		} else {
+			log.Printf("Invalid RSS on address %s: %s\n", feed.URL, err)
 		}
 	}
 	defer safeDatabase.Mux.RUnlock()
@@ -266,14 +344,14 @@ func evolve() {
 	safeDatabase.Mux.Unlock()
 }
 
-func startPolling() {
+func (conf *Config) startPolling() {
 	for {
-		go updateFeeds()
-		time.Sleep(time.Second * d)
+		go conf.updateFeeds()
+		time.Sleep(conf.PollInterval)
 	}
 }
 
-func updateHandler() {
+func (conf *Config) updateHandler() {
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = 120
 	updates, err := bot.GetUpdatesChan(updateConfig)
@@ -284,54 +362,13 @@ func updateHandler() {
 		if update.Message != nil && update.Message.Chat != nil {
 			chatId := update.Message.Chat.ID
 			if update.Message.IsCommand() {
-				args := update.Message.CommandArguments()
 				switch update.Message.Command() {
-				case "add_chat_id":
-					res, err := strconv.ParseInt(args, 10, 64)
-					if err == nil {
-						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
-						if err == nil {
-							_, _ = bot.DeleteMessage(tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID))
-							safeDatabase.Mux.Lock()
-							safeDatabase.Database.Ids = append(safeDatabase.Database.Ids, res)
-							safeDatabase.Mux.Unlock()
-							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
-							_ = w.Sync()
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
-						} else {
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that bot has access to this chat"))
-						}
-					}
 				case "start":
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Hi!"))
 				case "ping":
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Pong."))
-				case "add_feed":
-					if _, err := url.Parse(args); err == nil {
-						feed, err := parser.ParseURL(args)
-						if err == nil {
-							feeds.Mux.Lock()
-							feeds.FeedArray = append(feeds.FeedArray, feed)
-							feeds.Mux.Unlock()
-							safeDatabase.Mux.Lock()
-							safeDatabase.Database.Urls = append(safeDatabase.Database.Urls, link{args, true})
-							safeDatabase.Mux.Unlock()
-							_, _ = w.WriteString("+ u " + args + "\n")
-							err = w.Sync()
-							if err != nil {
-								log.Panic(err)
-							}
-							go updateFeeds()
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
-						} else {
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed."))
-						}
-					} else {
-						msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
-						_, _ = bot.Send(msg)
-					}
 				case "update_feeds":
-					go updateFeeds()
+					go conf.updateFeeds()
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Updating feeds..."))
 				}
 			}
@@ -339,16 +376,50 @@ func updateHandler() {
 	}
 }
 
-func main() {
-	auth := proxy.Auth{User: lookup("PROXY_USERNAME"), Password: lookup("PROXY_PASSWORD")}
-	dialer, err := proxy.SOCKS5("tcp", lookup("SOCKS_PROXY_URL"), &auth, proxy.Direct)
+func parseConfig(in []byte) (*Config, error) {
+	var result Config
+	err := yaml.Unmarshal(in, &result)
 	if err != nil {
-		log.Fatal("Invalid SOCKS5 proxy URL")
+		return nil, err
 	}
-	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
-	client := &http.Client{Transport: transport}
+	if result.PollIntervalStr != "" {
+		interval, err := time.ParseDuration(result.PollIntervalStr)
+		if err != nil {
+			return nil, err
+		}
+		result.PollInterval = interval
+	} else {
+		result.PollInterval = time.Second * 60
+	}
+	return &result, err
+}
+
+func readConfig(path string) (*Config, error) {
+	data, err := ioutil.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseConfig(data)
+}
+
+func main() {
+	var configPath string
+	flag.StringVar(&configPath, "c", "config.yaml", "Specify config path")
+	flag.Parse()
+	config, err := readConfig(configPath)
+	if err != nil {
+		log.Fatalf("Failed to read config file %s: %v", configPath, err)
+	}
+	// add back proxy support ?
+//	auth := proxy.Auth{User: lookup("PROXY_USERNAME"), Password: lookup("PROXY_PASSWORD")}
+//	dialer, err := proxy.SOCKS5("tcp", lookup("SOCKS_PROXY_URL"), &auth, proxy.Direct)
+//	if err != nil {
+//		log.Fatal("Invalid SOCKS5 proxy URL")
+//	}
+//	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
+//	client := &http.Client{Transport: transport}
 	log.Println("Creating bot API...")
-	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), client)
+	bot, err = tgbotapi.NewBotAPI(config.BotToken)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -356,7 +427,7 @@ func main() {
 	log.Println("Evolving db...")
 	evolve()
 	w, err = os.Create("evolution.txt")
-	go updateHandler()
+	go config.updateHandler()
 	log.Println("Starting polling...")
-	startPolling()
+	config.startPolling()
 }
