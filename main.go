@@ -37,13 +37,15 @@ type ItemFormatOptions struct {
 	}					`yaml:"linkOptions"`
 }
 
+type HashingOptions struct {
+	IncludeContent		bool	`yaml:"includeContent"`
+	IncludeQueryString	bool	`yaml:"includeQueryString"`
+}
+
 type Feed struct {
 	URL			string
 	ItemFormatOptions	ItemFormatOptions	`yaml:"itemFormatOptions"`
-	HashOptions struct {
-		includeContent		bool		`yaml:"includeContent"`
-		includeQueryString	bool		`yaml:"includeQueryString"`
-	}						`yaml:"hashOptions"`
+	HashingOptions		HashingOptions		`yaml:"HashingOptions"`
 }
 
 type Config struct {
@@ -218,25 +220,35 @@ func sendItem(chatID int64, feed *gofeed.Feed, feedOpts *Feed, itemNumber int) b
 	}
 }
 
-func filter(item *gofeed.Item) bool {
+func (opts *HashingOptions) filter(item *gofeed.Item) bool {
 	hash64 := fnv.New64a()
-	withoutGetArgs, err := removeQueryString(item.Link)
-	if err == nil {
-		_, err = io.WriteString(hash64, withoutGetArgs)
-		if err == nil {
-			hash := hash64.Sum64()
-			res := hashes.Contains(hash)
-			if !res {
-				hashes.Add(hash)
-				_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
-				_ = w.Sync()
-				return true
-			}
+	toWrite := item.Link
+	if !opts.IncludeQueryString {
+		withoutQueryString, err := removeQueryString(item.Link)
+		if err != nil {
+			fmt.Printf("Error: invalid item link: %s: %v\n", item.Link, err)
+			toWrite = ""
 		}
-		return false
-	} else {
+		toWrite = withoutQueryString
+	}
+	if opts.IncludeContent {
+		toWrite += "\n"
+		toWrite += item.Content
+	}
+	_, err := io.WriteString(hash64, toWrite)
+	if err != nil {
+		fmt.Printf("Error: failed to hash item: %v\n", err)
 		return true
 	}
+	hash := hash64.Sum64()
+	res := hashes.Contains(hash)
+	if !res {
+		hashes.Add(hash)
+		_, _ = w.WriteString("+ h " + strconv.FormatUint(hash, 10) + "\n")
+		_ = w.Sync()
+		return true
+	}
+	return false
 }
 
 func (config *Config) updateFeeds() {
@@ -256,7 +268,7 @@ func (config *Config) updateFeeds() {
 		if err == nil {
 			for itemNumber := len(parsedFeed.Items) - 1; itemNumber >= 0; itemNumber -= 1 {
 				item := parsedFeed.Items[itemNumber]
-				if filter(item) {
+				if feed.HashingOptions.filter(item) {
 					for _, chatId := range config.ChatIds {
 						sendItem(chatId, parsedFeed, &feed, itemNumber)
 					}
