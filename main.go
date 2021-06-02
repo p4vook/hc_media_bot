@@ -2,18 +2,16 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/emirpasic/gods/sets/treeset"
-	"github.com/go-telegram-bot-api/telegram-bot-api"
+	"gopkg.in/telegram-bot-api.v4"
 	"github.com/mmcdole/gofeed"
-	"golang.org/x/net/proxy"
 	"hash/fnv"
 	"html"
 	"io"
 	"io/ioutil"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,13 +20,29 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"gopkg.in/yaml.v2"
 )
 
-const d = 60 // sleep duration in seconds
-
 type link struct {
-	Address string
-	Enabled bool
+	Address	string
+	Enabled	bool
+}
+
+type Feed struct {
+	URL		string
+	CategoriesMap	map[string]string	`yaml:"categoriesMap"`
+	ItemLinkOptions struct {
+		HashWithTitle		bool	`yaml:"hashWithTitle"`
+		RemoveQueryString	bool	`yaml:"removeQueryString"`
+	}					`yaml:"itemLinkOptions"`
+}
+
+type Config struct {
+	BotToken	string		`yaml:"botToken"`
+	PollIntervalStr	string		`yaml:"pollInterval"`
+	PollInterval	time.Duration
+	Feeds		[]Feed
+	ChatIds		[]int64		`yaml:"chatIds"`
 }
 
 type db struct {
@@ -177,28 +191,31 @@ func filter(item *gofeed.Item) bool {
 	}
 }
 
-func updateFeeds() {
+func (config *Config) updateFeeds() {
 	feeds.Mux.Lock()
 	safeDatabase.Mux.RLock()
-	for i := 0; i < len(safeDatabase.Database.Urls); i += 1 {
-		if safeDatabase.Database.Urls[i].Enabled {
-			response, err := http.Get(safeDatabase.Database.Urls[i].Address)
-			if err != nil || response.StatusCode != http.StatusOK {
-				log.Println("Error when fetching URL "+safeDatabase.Database.Urls[i].Address+": ", err)
-				continue
-			}
-			feeds.FeedArray[i], err = parser.Parse(response.Body)
+	log.Printf("Updating feeds\n")
+	for _, feed := range config.Feeds {
+		response, err := http.Get(feed.URL)
+		if err != nil || response.StatusCode != http.StatusOK {
 			if err == nil {
-				for itemNumber := len(feeds.FeedArray[i].Items) - 1; itemNumber >= 0; itemNumber -= 1 {
-					if filter(feeds.FeedArray[i].Items[itemNumber]) {
-						for idNumber := 0; idNumber < len(safeDatabase.Database.Ids); idNumber += 1 {
-							sendItem(safeDatabase.Database.Ids[idNumber], feeds.FeedArray[i], itemNumber)
-						}
+				err = fmt.Errorf("Bad status code: %d", response.StatusCode)
+			}
+			log.Printf("Error when fetching URL %s: %v\n", feed.URL, err)
+			continue
+		}
+		parsedFeed, err := parser.Parse(response.Body)
+		if err == nil {
+			for itemNumber := len(parsedFeed.Items) - 1; itemNumber >= 0; itemNumber -= 1 {
+				item := parsedFeed.Items[itemNumber]
+				if filter(item) {
+					for _, chatId := range config.ChatIds {
+						sendItem(chatId, parsedFeed, itemNumber)
 					}
 				}
-			} else {
-				log.Println("Invalid RSS on address " + safeDatabase.Database.Urls[i].Address)
 			}
+		} else {
+			log.Printf("Invalid RSS on address %s: %s\n", feed.URL, err)
 		}
 	}
 	defer safeDatabase.Mux.RUnlock()
@@ -266,14 +283,14 @@ func evolve() {
 	safeDatabase.Mux.Unlock()
 }
 
-func startPolling() {
+func (conf *Config) startPolling() {
 	for {
-		go updateFeeds()
-		time.Sleep(time.Second * d)
+		go conf.updateFeeds()
+		time.Sleep(conf.PollInterval)
 	}
 }
 
-func updateHandler() {
+func (conf *Config) updateHandler() {
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = 120
 	updates, err := bot.GetUpdatesChan(updateConfig)
@@ -284,54 +301,13 @@ func updateHandler() {
 		if update.Message != nil && update.Message.Chat != nil {
 			chatId := update.Message.Chat.ID
 			if update.Message.IsCommand() {
-				args := update.Message.CommandArguments()
 				switch update.Message.Command() {
-				case "add_chat_id":
-					res, err := strconv.ParseInt(args, 10, 64)
-					if err == nil {
-						msg, err := bot.Send(tgbotapi.NewMessage(res, "Test"))
-						if err == nil {
-							_, _ = bot.DeleteMessage(tgbotapi.NewDeleteMessage(msg.Chat.ID, msg.MessageID))
-							safeDatabase.Mux.Lock()
-							safeDatabase.Database.Ids = append(safeDatabase.Database.Ids, res)
-							safeDatabase.Mux.Unlock()
-							_, _ = w.WriteString("+ i " + strconv.FormatInt(res, 10) + "\n")
-							_ = w.Sync()
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
-						} else {
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that bot has access to this chat"))
-						}
-					}
 				case "start":
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Hi!"))
 				case "ping":
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Pong."))
-				case "add_feed":
-					if _, err := url.Parse(args); err == nil {
-						feed, err := parser.ParseURL(args)
-						if err == nil {
-							feeds.Mux.Lock()
-							feeds.FeedArray = append(feeds.FeedArray, feed)
-							feeds.Mux.Unlock()
-							safeDatabase.Mux.Lock()
-							safeDatabase.Database.Urls = append(safeDatabase.Database.Urls, link{args, true})
-							safeDatabase.Mux.Unlock()
-							_, _ = w.WriteString("+ u " + args + "\n")
-							err = w.Sync()
-							if err != nil {
-								log.Panic(err)
-							}
-							go updateFeeds()
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Done!"))
-						} else {
-							_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Check that URL provides valid RSS/Atom feed."))
-						}
-					} else {
-						msg := tgbotapi.NewMessage(chatId, "Please send me an URL")
-						_, _ = bot.Send(msg)
-					}
 				case "update_feeds":
-					go updateFeeds()
+					go conf.updateFeeds()
 					_, _ = bot.Send(tgbotapi.NewMessage(chatId, "Updating feeds..."))
 				}
 			}
@@ -339,16 +315,47 @@ func updateHandler() {
 	}
 }
 
-func main() {
-	auth := proxy.Auth{User: lookup("PROXY_USERNAME"), Password: lookup("PROXY_PASSWORD")}
-	dialer, err := proxy.SOCKS5("tcp", lookup("SOCKS_PROXY_URL"), &auth, proxy.Direct)
+func parseConfig(in []byte) (*Config, error) {
+	var result Config
+	err := yaml.Unmarshal(in, &result)
 	if err != nil {
-		log.Fatal("Invalid SOCKS5 proxy URL")
+		return nil, err
 	}
-	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
-	client := &http.Client{Transport: transport}
+	if result.PollIntervalStr != "" {
+		interval, err := time.ParseDuration(result.PollIntervalStr)
+		if err != nil {
+			return nil, err
+		}
+		result.PollInterval = interval
+	} else {
+		result.PollInterval = time.Second * 60
+	}
+	return &result, err
+}
+
+func readConfig(filename string) (*Config, error) {
+	data, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	return parseConfig(data)
+}
+
+func main() {
+	config, err := readConfig("config.yaml") // TODO: command-line config argument
+	if err != nil {
+		log.Panic(err)
+	}
+	// add back proxy support ?
+//	auth := proxy.Auth{User: lookup("PROXY_USERNAME"), Password: lookup("PROXY_PASSWORD")}
+//	dialer, err := proxy.SOCKS5("tcp", lookup("SOCKS_PROXY_URL"), &auth, proxy.Direct)
+//	if err != nil {
+//		log.Fatal("Invalid SOCKS5 proxy URL")
+//	}
+//	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) { return dialer.Dial(network, addr) }}
+//	client := &http.Client{Transport: transport}
 	log.Println("Creating bot API...")
-	bot, err = tgbotapi.NewBotAPIWithClient(lookup("TOKEN"), client)
+	bot, err = tgbotapi.NewBotAPI(config.BotToken)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -356,7 +363,7 @@ func main() {
 	log.Println("Evolving db...")
 	evolve()
 	w, err = os.Create("evolution.txt")
-	go updateHandler()
+	go config.updateHandler()
 	log.Println("Starting polling...")
-	startPolling()
+	config.startPolling()
 }
