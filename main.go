@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,13 +29,21 @@ type link struct {
 	Enabled	bool
 }
 
-type Feed struct {
-	URL		string
+type ItemFormatOptions struct {
 	CategoriesMap	map[string]string	`yaml:"categoriesMap"`
-	ItemLinkOptions struct {
-		HashWithTitle		bool	`yaml:"hashWithTitle"`
-		RemoveQueryString	bool	`yaml:"removeQueryString"`
-	}					`yaml:"itemLinkOptions"`
+	LinkOptions struct {
+		IncludeQueryString	bool	`yaml:"includeQueryString"`
+		LinkText		string	`yaml:"linkText"`
+	}					`yaml:"linkOptions"`
+}
+
+type Feed struct {
+	URL			string
+	ItemFormatOptions	ItemFormatOptions	`yaml:"itemFormatOptions"`
+	HashOptions struct {
+		includeContent		bool		`yaml:"includeContent"`
+		includeQueryString	bool		`yaml:"includeQueryString"`
+	}						`yaml:"hashOptions"`
 }
 
 type Config struct {
@@ -89,77 +98,79 @@ func uint64Comp(a, b interface{}) int {
 }
 
 func replacement(r rune) string {
-	var res string
-	if (8210 <= int(r) && int(r) < 8214) || int(r) == 11834 || int(r) == 11835 || int(r) == 45 || int(r) == 32 {
-		res = "_"
-	} else if r == '!' || r == '?' || r == '(' || r == ')' || r == '\'' || r == '"' || r == '«' || r == '»' {
-		res = ""
-	} else if r == '&' || r == '+' || r == ';' {
-		res = "_"
-	} else if r == '#' {
-		res = "sharp"
-	} else if r == '.' {
-		res = "dot"
-	} else {
-		res = string(unicode.ToLower(r))
+	if unicode.IsLetter(r) || unicode.IsNumber(r) {
+		return string(r)
 	}
-	return res
+	// punctuation, dash
+	if unicode.Is(unicode.Pd, r) {
+		return string("_")
+	}
+	if unicode.IsSpace(r) || r == '&' || r == '+' || r == ';' {
+		return string("_")
+	}
+	return string("")
 }
 
 func toHashTag(category string) string {
+	if len(category) == 0 {
+		return ""
+	}
 	res := "#"
-	category = strings.ReplaceAll(category, "*nix", "unix")
-	category = strings.ReplaceAll(category, "c++", "cpp")
+	if unicode.IsNumber(rune(category[0])) {
+		res += "_"
+	}
 	for i, r := range category {
 		x := replacement(r)
-		if (x == "_" && res[len(res)-1] != '_' && i != 0 && i != len(category)-1) || x != "_" {
+		if x != "_" {
 			res += x
+		} else {
+			// no consequent underscores, no underscores in the beginning
+			// and in the end
+			if (i != 0 && i != len(category) - 1 && res[len(res) - 1] != '_') {
+				res += x
+			}
 		}
 	}
-	return res
-}
-
-func formatCategories(item *gofeed.Item) string {
-	n := len(item.Categories)
-	categories := make([]string, n)
-	s := treeset.NewWithStringComparator()
-	for i := 0; i < n; i += 1 {
-		categories[i] = toHashTag(item.Categories[i])
-	}
-	for i := 0; i < n; i += 1 {
-		if !s.Contains(categories[i]) {
-			s.Add(categories[i])
-		}
-	}
-	values := s.Values()
-	res := ""
-	for index := 0; index < len(values); index += 1 {
-		res += values[index].(string) + " "
-	}
-	return res
-}
-
-func formatItem(feed *gofeed.Feed, itemNumber int) string {
-	item := feed.Items[itemNumber]
-	res := "[" + html.EscapeString(feed.Title) + "]\n<b>" +
-		html.EscapeString(item.Title) + "</b>\n" +
-		html.EscapeString(formatCategories(item)) + "\n\n" +
-		"<a href=\"" + html.EscapeString(item.Link) + "\">Читать</a>"
-	return res
-}
-
-func sendItem(chatID int64, feed *gofeed.Feed, itemNumber int) bool {
-	if feed != nil && feed.Items != nil && itemNumber < len(feed.Items) {
-		msg := tgbotapi.NewMessage(chatID, formatItem(feed, itemNumber))
-		msg.ParseMode = "HTML"
-		_, _ = bot.Send(msg)
-		return true
+	if res != "#" {
+		return res
 	} else {
-		return false
+		return ""
 	}
 }
 
-func removeGetArgs(u string) (string, error) {
+func stringSliceContains(slice []string, s string) bool {
+	for _, v := range slice {
+		if s == v {
+			return true
+		}
+	}
+	return false
+}
+
+func (formatOpts *ItemFormatOptions) formatCategories(item *gofeed.Item) string {
+	hashtags := []string{}
+	for _, category := range item.Categories {
+		category = strings.ToLower(category)
+		for k, v := range formatOpts.CategoriesMap {
+			category = strings.Replace(category, k, v, -1)
+		}
+		hashtag := toHashTag(category)
+		if hashtag != "" && !stringSliceContains(hashtags, hashtag) {
+			hashtags = append(hashtags, hashtag)
+		}
+	}
+	sort.Strings(hashtags)
+	res := ""
+	for i, hashtag := range hashtags {
+		res += hashtag
+		if i != len(hashtags) - 1 {
+			res += " "
+		}
+	}
+	return res
+}
+
+func removeQueryString(u string) (string, error) {
 	parsed, err := url.Parse(u)
 	if err == nil {
 		parsed.RawQuery = ""
@@ -170,9 +181,46 @@ func removeGetArgs(u string) (string, error) {
 	}
 }
 
+func (formatOpts *ItemFormatOptions) formatLink(link string) string {
+	result := link
+	if !formatOpts.LinkOptions.IncludeQueryString {
+		var err error
+		result, err = removeQueryString(result)
+		if err != nil {
+			log.Printf("Invalid item link: %s: %v\n", link, err)
+			result = link
+		}
+	}
+	if formatOpts.LinkOptions.LinkText != "" {
+		return "<a href=\"" + html.EscapeString(result) +
+			"\">" + html.EscapeString(formatOpts.LinkOptions.LinkText) + "</a>"
+	}
+	return html.EscapeString(result)
+}
+
+func (formatOpts *ItemFormatOptions) formatItem(feed *gofeed.Feed, itemNumber int) string {
+	item := feed.Items[itemNumber]
+	res := "[" + html.EscapeString(feed.Title) + "]\n<b>" +
+		html.EscapeString(item.Title) + "</b>\n" +
+		html.EscapeString(formatOpts.formatCategories(item)) + "\n\n" +
+		formatOpts.formatLink(item.Link)
+	return res
+}
+
+func sendItem(chatID int64, feed *gofeed.Feed, feedOpts *Feed, itemNumber int) bool {
+	if feed != nil && feed.Items != nil && itemNumber < len(feed.Items) {
+		msg := tgbotapi.NewMessage(chatID, feedOpts.ItemFormatOptions.formatItem(feed, itemNumber))
+		msg.ParseMode = "HTML"
+		_, _ = bot.Send(msg)
+		return true
+	} else {
+		return false
+	}
+}
+
 func filter(item *gofeed.Item) bool {
 	hash64 := fnv.New64a()
-	withoutGetArgs, err := removeGetArgs(item.Link)
+	withoutGetArgs, err := removeQueryString(item.Link)
 	if err == nil {
 		_, err = io.WriteString(hash64, withoutGetArgs)
 		if err == nil {
@@ -210,7 +258,7 @@ func (config *Config) updateFeeds() {
 				item := parsedFeed.Items[itemNumber]
 				if filter(item) {
 					for _, chatId := range config.ChatIds {
-						sendItem(chatId, parsedFeed, itemNumber)
+						sendItem(chatId, parsedFeed, &feed, itemNumber)
 					}
 				}
 			}
